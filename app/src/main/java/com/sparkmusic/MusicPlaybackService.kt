@@ -61,6 +61,15 @@ class MusicPlaybackService : MediaBrowserServiceCompat() {
 
         /** Album art is published twice per track, so it is kept small to stay within Binder. */
         private const val ARTWORK_MAX_SIZE = 320
+
+        /** Extra carrying the media id of the track that failed, for the phone UI. */
+        const val EXTRA_FAILED_MEDIA_ID = "com.sparkmusic.extra.FAILED_MEDIA_ID"
+
+        /** Extra carrying the ExoPlayer error code of the failed track. */
+        const val EXTRA_FAILED_ERROR_CODE = "com.sparkmusic.extra.FAILED_ERROR_CODE"
+
+        /** Extra carrying the ExoPlayer error code name, for logs and diagnostics. */
+        const val EXTRA_FAILED_ERROR_NAME = "com.sparkmusic.extra.FAILED_ERROR_NAME"
     }
 
     override fun onCreate() {
@@ -346,8 +355,15 @@ class MusicPlaybackService : MediaBrowserServiceCompat() {
 
     /** Reports the failure and moves on, instead of stalling on an unplayable file. */
     private fun onTrackFailed(error: PlaybackException) {
-        currentMediaId?.let { failedMediaIds.add(it) }
-        publishPlaybackState(PlaybackStateCompat.STATE_ERROR, error.message ?: "Playback error")
+        val failedId = currentMediaId
+        failedId?.let { failedMediaIds.add(it) }
+        publishPlaybackState(
+            PlaybackStateCompat.STATE_ERROR,
+            error.message ?: "Playback error",
+            failedId,
+            error.errorCode,
+            error.errorCodeName
+        )
 
         val next = nextPlayableIndex()
         if (next == -1) {
@@ -408,17 +424,33 @@ class MusicPlaybackService : MediaBrowserServiceCompat() {
         publishPlaybackState(state, null)
     }
 
-    private fun publishPlaybackState(state: Int, errorMessage: CharSequence?) {
+    private fun publishPlaybackState(
+        state: Int,
+        errorMessage: CharSequence?,
+        failedMediaId: String? = null,
+        errorCode: Int = 0,
+        errorName: String? = null
+    ) {
         val hasMedia = exoPlayer.currentMediaItem != null
         val position = if (hasMedia) exoPlayer.currentPosition else 0L
         // PlaybackStateCompat requires a speed of 0 whenever playback is not progressing,
         // otherwise clients extrapolate a position that keeps moving while paused.
         val speed = if (state == PlaybackStateCompat.STATE_PLAYING) 1.0f else 0.0f
 
+        // Extras describe the failure to the phone UI. They are cleared on every other update so
+        // a stale track can never be reported again.
+        val extras = Bundle()
+        if (failedMediaId != null) {
+            extras.putString(EXTRA_FAILED_MEDIA_ID, failedMediaId)
+            extras.putInt(EXTRA_FAILED_ERROR_CODE, errorCode)
+            extras.putString(EXTRA_FAILED_ERROR_NAME, errorName)
+        }
+
         stateBuilder
             .setState(state, position, speed)
             .setBufferedPosition(if (hasMedia) exoPlayer.bufferedPosition else 0L)
             .setErrorMessage(PlaybackStateCompat.ERROR_CODE_UNKNOWN_ERROR, errorMessage)
+            .setExtras(extras)
         mediaSession.setPlaybackState(stateBuilder.build())
     }
 

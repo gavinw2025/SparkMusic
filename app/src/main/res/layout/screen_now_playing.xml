@@ -32,6 +32,14 @@
             android:text="@string/now_playing"
             android:textAppearance="?android:attr/textAppearanceLarge"
             android:textStyle="bold" />
+
+        <ImageButton
+            android:id="@+id/btnFavouriteNowPlaying"
+            android:layout_width="48dp"
+            android:layout_height="48dp"
+            android:background="?attr/selectableItemBackgroundBorderless"
+            android:contentDescription="@string/add_to_favourites"
+            android:src="@drawable/ic_favorite_border" />
     </LinearLayout>
 
     <!-- Artwork is square and sized to the smaller of the available width/height, so it is

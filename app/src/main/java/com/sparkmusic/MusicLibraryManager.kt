@@ -10,8 +10,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 
@@ -106,17 +104,62 @@ object MusicLibraryManager {
 
             val appContext = context.applicationContext
             val scanned = withContext(Dispatchers.IO) {
-                MusicScanner(appContext).scanMusicFiles()
+                val scope = ScanScopeStore.current(appContext)
+                MusicScanner(appContext).scanMusicFiles(scope)
             }
 
-            synchronized(stateLock) {
-                musicFiles = scanned
-                isLoaded = true
+            // Keep memory and cache consistent: an empty result must not replace a known
+            // non-empty library in only one of the two places.
+            val previousCount = synchronized(stateLock) { musicFiles.size }
+            val replaceLibrary = LibraryCachePolicy.shouldWriteCache(
+                existingCount = previousCount.takeIf { it > 0 },
+                newCount = scanned.size
+            )
+
+            if (replaceLibrary) {
+                synchronized(stateLock) {
+                    musicFiles = scanned
+                    isLoaded = true
+                }
+                withContext(Dispatchers.IO) { writeCache(appContext, scanned) }
+            } else {
+                Log.w(TAG, "Keeping the previous library, the scan returned no tracks")
             }
-            withContext(Dispatchers.IO) { writeCache(appContext, scanned) }
             scanGeneration.incrementAndGet()
             notifyListeners()
             scanned
+        }
+    }
+
+    /**
+     * Removes one track after an explicit user confirmation and rewrites the index.
+     *
+     * Unlike a scan, an explicit removal is written even when it empties the library. Memory is
+     * only updated after the index was written, so the two can never disagree.
+     *
+     * @return true when the entry left the library and the index.
+     */
+    suspend fun removeTrack(context: Context, id: String, path: String): Boolean {
+        val appContext = context.applicationContext
+
+        return scanLock.withLock {
+            val result = synchronized(stateLock) { LibraryRemoval.remove(musicFiles, id, path) }
+            val removed = result.removed ?: return@withLock false
+
+            val written = withContext(Dispatchers.IO) {
+                writeCache(appContext, result.items, force = true)
+            }
+            if (!written) {
+                Log.w(TAG, "Could not persist the removal of ${removed.id}")
+                return@withLock false
+            }
+
+            synchronized(stateLock) {
+                musicFiles = result.items
+                isLoaded = true
+            }
+            notifyListeners()
+            true
         }
     }
 
@@ -132,7 +175,7 @@ object MusicLibraryManager {
         val json = LibraryCacheFile.read(cacheFile(context)) ?: return null
 
         return try {
-            deserialize(json)
+            MusicLibraryCodec.decode(json)
         } catch (e: Exception) {
             Log.w(TAG, "Ignoring unreadable library cache", e)
             null
@@ -142,69 +185,32 @@ object MusicLibraryManager {
     /**
      * Caches [items], except when that would replace a known non-empty index with nothing, which
      * happens when a scan sees an empty MediaStore because of a transient error.
+     *
+     * @param force writes an empty library too, for an explicit user removal.
+     * @return true only when the new index is in place.
      */
-    private fun writeCache(context: Context, items: List<MusicItem>) {
+    private fun writeCache(context: Context, items: List<MusicItem>, force: Boolean = false): Boolean {
         val file = cacheFile(context)
-        val existingCount = if (items.isEmpty()) countCachedItems(file) else null
 
-        if (!LibraryCachePolicy.shouldWriteCache(existingCount, items.size)) {
-            Log.w(TAG, "Keeping the previous library index, the scan returned no tracks")
-            return
+        if (!force) {
+            val existingCount = if (items.isEmpty()) countCachedItems(file) else null
+            if (!LibraryCachePolicy.shouldWriteCache(existingCount, items.size)) {
+                Log.w(TAG, "Keeping the previous library index, the scan returned no tracks")
+                return false
+            }
         }
 
-        if (!LibraryCacheFile.write(file, serialize(items))) {
+        if (!LibraryCacheFile.write(file, MusicLibraryCodec.encode(items))) {
             Log.w(TAG, "Could not cache the music library")
+            return false
         }
+        return true
     }
 
     /** Entries in the cached index, or null when there is no usable index to preserve. */
     private fun countCachedItems(file: File): Int? = try {
-        LibraryCacheFile.read(file)?.let { deserialize(it).size }
+        LibraryCacheFile.read(file)?.let { MusicLibraryCodec.decode(it).size }
     } catch (e: Exception) {
         null
-    }
-
-    private fun serialize(items: List<MusicItem>): String {
-        val array = JSONArray()
-        items.forEach { item ->
-            array.put(
-                JSONObject()
-                    .put("id", item.id)
-                    .put("title", item.title)
-                    .put("artist", item.artist)
-                    .put("album", item.album)
-                    .put("duration", item.duration)
-                    .put("path", item.path)
-            )
-        }
-        return array.toString()
-    }
-
-    private fun deserialize(json: String): List<MusicItem> {
-        val array = JSONArray(json)
-        val items = ArrayList<MusicItem>(array.length())
-
-        for (index in 0 until array.length()) {
-            val entry = array.optJSONObject(index) ?: continue
-            val id = entry.optString("id")
-            val path = entry.optString("path")
-            if (id.isEmpty() || path.isEmpty()) continue
-
-            items.add(
-                MusicItem(
-                    id = id,
-                    title = entry.optString("title"),
-                    artist = entry.optString("artist"),
-                    album = entry.optString("album"),
-                    duration = entry.optLong("duration"),
-                    path = path
-                )
-            )
-        }
-        // An index that has entries but no valid ones is corrupt, not an empty library.
-        if (array.length() > 0 && items.isEmpty()) {
-            throw IllegalArgumentException("Library cache contains no valid entries")
-        }
-        return items
     }
 }
