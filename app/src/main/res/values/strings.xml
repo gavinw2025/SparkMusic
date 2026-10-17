@@ -1,3 +1,12 @@
 <resources>
     <string name="app_name">Spark Music</string>
+    <string name="music_library">Music Library</string>
+    <string name="now_playing">Now Playing</string>
+    <string name="scan_music_files">Scan Music Files</string>
+    <string name="play">Play</string>
+    <string name="pause">Pause</string>
+    <string name="previous_track">Previous track</string>
+    <string name="next_track">Next track</string>
+    <string name="back">Back</string>
+    <string name="album_art">Album art</string>
 </resources>

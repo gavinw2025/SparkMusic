@@ -9,10 +9,13 @@ import android.support.v4.media.MediaMetadataCompat
 import android.support.v4.media.session.MediaControllerCompat
 import android.support.v4.media.session.PlaybackStateCompat
 import android.util.Log
+import android.view.View
 import android.widget.Button
+import android.widget.ImageButton
 import android.widget.SeekBar
 import android.widget.TextView
 import android.widget.Toast
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
@@ -28,14 +31,26 @@ class MainActivity : AppCompatActivity() {
     private lateinit var recyclerView: RecyclerView
     private lateinit var musicAdapter: MusicAdapter
     private lateinit var btnScan: Button
-    private lateinit var btnPlayPause: Button
-    private lateinit var btnNext: Button
-    private lateinit var btnPrevious: Button
+    private lateinit var btnPlayPause: ImageButton
+    private lateinit var btnNext: ImageButton
+    private lateinit var btnPrevious: ImageButton
     private lateinit var seekBar: SeekBar
     private lateinit var tvCurrentTime: TextView
     private lateinit var tvTotalTime: TextView
     private lateinit var tvNowPlaying: TextView
     private lateinit var tvArtist: TextView
+
+    private lateinit var screenLibrary: View
+    private lateinit var screenNowPlaying: View
+    private lateinit var miniPlayerContainer: View
+    private lateinit var miniPlayerCard: View
+    private lateinit var miniArtwork: ImageView
+    private lateinit var miniTitle: TextView
+    private lateinit var miniArtist: TextView
+    private lateinit var miniPlayPause: ImageButton
+    private lateinit var btnBackNowPlaying: ImageButton
+
+    private var showingNowPlaying = false
 
     private var mediaBrowser: MediaBrowserCompat? = null
     private var mediaController: MediaControllerCompat? = null
@@ -68,17 +83,30 @@ class MainActivity : AppCompatActivity() {
         permissionRequested = savedInstanceState?.getBoolean(STATE_PERMISSION_REQUESTED) == true
         MusicLibraryManager.load(this)
 
+        screenLibrary = findViewById(R.id.screenLibrary)
+        screenNowPlaying = findViewById(R.id.screenNowPlaying)
+
         recyclerView = findViewById(R.id.recyclerView)
         btnScan = findViewById(R.id.btnScan)
-        btnPlayPause = findViewById(R.id.btnPlayPause)
-        btnNext = findViewById(R.id.btnNext)
-        btnPrevious = findViewById(R.id.btnPrevious)
-        seekBar = findViewById(R.id.seekBar)
-        tvCurrentTime = findViewById(R.id.tvCurrentTime)
-        tvTotalTime = findViewById(R.id.tvTotalTime)
-        tvNowPlaying = findViewById(R.id.tvNowPlaying)
-        tvArtist = findViewById(R.id.tvArtist)
-        albumArt = findViewById(R.id.albumArt)
+
+        // Scoped to the Now Playing screen: item_music.xml also defines a tvArtist.
+        btnPlayPause = screenNowPlaying.findViewById(R.id.btnPlayPause)
+        btnNext = screenNowPlaying.findViewById(R.id.btnNext)
+        btnPrevious = screenNowPlaying.findViewById(R.id.btnPrevious)
+        seekBar = screenNowPlaying.findViewById(R.id.seekBar)
+        tvCurrentTime = screenNowPlaying.findViewById(R.id.tvCurrentTime)
+        tvTotalTime = screenNowPlaying.findViewById(R.id.tvTotalTime)
+        tvNowPlaying = screenNowPlaying.findViewById(R.id.tvNowPlaying)
+        tvArtist = screenNowPlaying.findViewById(R.id.tvArtist)
+        albumArt = screenNowPlaying.findViewById(R.id.albumArt)
+        btnBackNowPlaying = screenNowPlaying.findViewById(R.id.btnBackNowPlaying)
+
+        miniPlayerContainer = findViewById(R.id.miniPlayerContainer)
+        miniPlayerCard = findViewById(R.id.miniPlayerCard)
+        miniArtwork = findViewById(R.id.miniArtwork)
+        miniTitle = findViewById(R.id.miniTitle)
+        miniArtist = findViewById(R.id.miniArtist)
+        miniPlayPause = findViewById(R.id.miniPlayPause)
 
 
         recyclerView.layoutManager = LinearLayoutManager(this)
@@ -103,6 +131,28 @@ class MainActivity : AppCompatActivity() {
             mediaController?.transportControls?.skipToPrevious()
         }
 
+        // The mini-player only navigates; it never starts playback itself.
+        miniPlayerCard.setOnClickListener {
+            showNowPlaying()
+        }
+        miniPlayPause.setOnClickListener {
+            togglePlayback()
+        }
+        btnBackNowPlaying.setOnClickListener {
+            showLibrary()
+        }
+
+        onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
+            override fun handleOnBackPressed() {
+                if (showingNowPlaying) {
+                    showLibrary()
+                } else {
+                    isEnabled = false
+                    onBackPressedDispatcher.onBackPressed()
+                }
+            }
+        })
+
         setupSeekBar()
         setupMediaBrowser()
         startProgressUpdate()
@@ -110,6 +160,21 @@ class MainActivity : AppCompatActivity() {
         // Show the restored library first, then recover only when nothing could be restored.
         musicAdapter.submitList(MusicLibraryManager.getMusicFiles())
         recoverLibraryIfNeeded()
+        applyScreen(savedInstanceState?.getBoolean(STATE_SHOWING_NOW_PLAYING) == true)
+    }
+
+    private fun showLibrary() = applyScreen(false)
+
+    private fun showNowPlaying() = applyScreen(true)
+
+    /** Switches the visible screen only; playback and its controller stay untouched. */
+    private fun applyScreen(nowPlaying: Boolean) {
+        showingNowPlaying = nowPlaying
+        screenLibrary.visibility = if (nowPlaying) View.GONE else View.VISIBLE
+        screenNowPlaying.visibility = if (nowPlaying) View.VISIBLE else View.GONE
+        supportActionBar?.title = getString(
+            if (nowPlaying) R.string.now_playing else R.string.app_name
+        )
     }
 
     /**
@@ -190,7 +255,13 @@ class MainActivity : AppCompatActivity() {
 
     private fun updatePlaybackState(state: PlaybackStateCompat?) {
         val isPlaying = state?.state == PlaybackStateCompat.STATE_PLAYING
-        btnPlayPause.text = if (isPlaying) "Pause" else "Play"
+        val iconRes = if (isPlaying) R.drawable.ic_pause else R.drawable.ic_play_arrow
+        val description = getString(if (isPlaying) R.string.pause else R.string.play)
+
+        btnPlayPause.setImageResource(iconRes)
+        btnPlayPause.contentDescription = description
+        miniPlayPause.setImageResource(iconRes)
+        miniPlayPause.contentDescription = description
 
         if (!isUserSeeking) {
             seekBar.progress = state?.position?.toInt() ?: 0
@@ -209,14 +280,17 @@ class MainActivity : AppCompatActivity() {
             seekBar.max = duration.toInt()
             tvTotalTime.text = formatTime(duration)
 
-            // 🎨 Set album art
             if (artBitmap != null) {
                 albumArt.setImageBitmap(artBitmap)
+                miniArtwork.setImageBitmap(artBitmap)
             } else {
                 albumArt.setImageResource(R.drawable.music_placeholder)
-
+                miniArtwork.setImageResource(R.drawable.ic_music_placeholder)
             }
 
+            miniTitle.text = title
+            miniArtist.text = artist
+            miniPlayerContainer.visibility = View.VISIBLE
         } else {
             tvNowPlaying.text = "No song playing"
             tvArtist.text = ""
@@ -225,9 +299,12 @@ class MainActivity : AppCompatActivity() {
             tvCurrentTime.text = "0:00"
             tvTotalTime.text = "0:00"
 
-            // Reset artwork
             albumArt.setImageResource(R.drawable.music_placeholder)
 
+            miniTitle.text = ""
+            miniArtist.text = ""
+            miniArtwork.setImageResource(R.drawable.ic_music_placeholder)
+            miniPlayerContainer.visibility = View.GONE
         }
     }
 
@@ -326,9 +403,11 @@ class MainActivity : AppCompatActivity() {
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_PERMISSION_REQUESTED, permissionRequested)
+        outState.putBoolean(STATE_SHOWING_NOW_PLAYING, showingNowPlaying)
     }
 
     private companion object {
         private const val STATE_PERMISSION_REQUESTED = "permission_requested"
+        private const val STATE_SHOWING_NOW_PLAYING = "showing_now_playing"
     }
 }

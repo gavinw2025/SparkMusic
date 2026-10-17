@@ -39,6 +39,21 @@ class MusicPlaybackService : MediaBrowserServiceCompat() {
     private var artworkJob: Job? = null
     private val failedMediaIds = mutableSetOf<String>()
 
+    /**
+     * Presentation-only artwork fallback, decoded once per service instance. It never replaces
+     * genuine artwork: the asynchronous lookup overwrites both keys when it finds a bitmap.
+     */
+    private val fallbackArtwork: Bitmap? by lazy(LazyThreadSafetyMode.SYNCHRONIZED) {
+        BitmapFactory.decodeResource(
+            resources,
+            R.drawable.sparkmusic_artwork_fallback,
+            BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.RGB_565
+                inScaled = false
+            }
+        )
+    }
+
     companion object {
         private const val TAG = "SparkMusicService"
         private const val ROOT_ID = "root_id"
@@ -202,13 +217,21 @@ class MusicPlaybackService : MediaBrowserServiceCompat() {
         exoPlayer.prepare()
         exoPlayer.play()
 
-        val baseMetadata = MediaMetadataCompat.Builder()
+        val metadataBuilder = MediaMetadataCompat.Builder()
             .putString(MediaMetadataCompat.METADATA_KEY_MEDIA_ID, musicItem.id)
             .putString(MediaMetadataCompat.METADATA_KEY_TITLE, musicItem.title)
             .putString(MediaMetadataCompat.METADATA_KEY_ARTIST, musicItem.artist)
             .putString(MediaMetadataCompat.METADATA_KEY_ALBUM, musicItem.album)
             .putLong(MediaMetadataCompat.METADATA_KEY_DURATION, musicItem.duration)
-            .build()
+
+        // Presentation fallback for Android Auto. Genuine artwork overwrites both keys below.
+        fallbackArtwork?.let { fallback ->
+            metadataBuilder
+                .putBitmap(MediaMetadataCompat.METADATA_KEY_ALBUM_ART, fallback)
+                .putBitmap(MediaMetadataCompat.METADATA_KEY_ART, fallback)
+        }
+
+        val baseMetadata = metadataBuilder.build()
 
         mediaSession.setMetadata(baseMetadata) // Show basic info immediately
 
